@@ -1,10 +1,19 @@
 const express = require('express');
-const Tesseract = require('tesseract.js');
-const sharp = require('sharp');
+const vision = require('@google-cloud/vision');
 const app = express();
 
 // Genesys envía Base64 largos, permitimos hasta 10MB
 app.use(express.json({ limit: '10mb' }));
+
+// 1. Configuración de Google Vision con tu JSON del archivo project-bd5c4921...
+let client;
+try {
+    const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
+    client = new vision.ImageAnnotatorClient({ credentials });
+    console.log("✅ Conectado a Google Cloud Vision: " + credentials.project_id);
+} catch (error) {
+    console.error("❌ Error con las credenciales de Google:", error.message);
+}
 
 app.post('/api/extract', async (req, res) => {
     try {
@@ -14,36 +23,32 @@ app.post('/api/extract', async (req, res) => {
             return res.status(400).json({ error: "Falta el campo ocrBase64" });
         }
 
-        // 1. Convertir Base64 a Buffer
+        // 2. Convertir Base64 a Buffer (Sin Sharp, Google lo hace mejor)
         const base64Data = ocrBase64.replace(/^data:image\/\w+;base64,/, "");
         const imageBuffer = Buffer.from(base64Data, 'base64');
 
-        // 2. Procesar con Sharp (Configuración V1)
-const optimizedBuffer = await sharp(imageBuffer)
-    .rotate()
-    .resize({ width: 800 }) // 💡 BAJAMOS EL TAMAÑO DRÁSTICAMENTE
-    .grayscale()
-    .normalize() // 💡 Normalize es más rápido y mejor que modulate para OCR
-    .sharpen()
-    .toBuffer();
-
-        // 3. OCR con Tesseract
-        const { data: { text } } = await Tesseract.recognize(optimizedBuffer, 'spa');
+        // 3. OCR con Google Cloud Vision (Súper rápido y no consume tu RAM)
+        const [result] = await client.textDetection(imageBuffer);
+        const text = result.fullTextAnnotation ? result.fullTextAnnotation.text : "";
         
-        const textoLimpio = text.replace(/\s+/g, ' ').toUpperCase();
-        const cedulaMatch = textoLimpio.match(/\d{7,11}/);
+        // 4. Limpiar y buscar la cédula (7 a 11 dígitos)
+        const soloNumeros = text.replace(/\D/g, ''); 
+        const match = soloNumeros.match(/\d{7,11}/);
 
-        // 4. Respuesta para Genesys
+        // Respuesta limpia para Genesys
         res.json({
-            cedula: cedulaMatch ? cedulaMatch[0] : "No detectada"
+            cedula: match ? match[0] : "No detectada"
         });
 
     } catch (error) {
+        console.error("Error en OCR:", error);
         res.status(500).json({ error: error.message });
     }
 });
 
-const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => console.log(`Servidor en puerto ${PORT}`));
+// Usamos el puerto 10000 para Render como vimos en tus logs
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Servidor OCR de Google listo en puerto ${PORT}`);
+});
 
