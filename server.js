@@ -19,13 +19,13 @@ app.post('/api/extract', async (req, res) => {
         const imageBuffer = Buffer.from(base64Data, 'base64');
 
         // 2. Procesar con Sharp (Configuración V1)
-        const optimizedBuffer = await sharp(imageBuffer)
-            .rotate()
-            .resize(2200)
-            .grayscale()
-            .modulate({ brightness: 1.2, contrast: 1.8 })
-            .sharpen()
-            .toBuffer();
+const optimizedBuffer = await sharp(imageBuffer)
+    .rotate()
+    .resize({ width: 800 }) // 💡 BAJAMOS EL TAMAÑO DRÁSTICAMENTE
+    .grayscale()
+    .normalize() // 💡 Normalize es más rápido y mejor que modulate para OCR
+    .sharpen()
+    .toBuffer();
 
         // 3. OCR con Tesseract
         const { data: { text } } = await Tesseract.recognize(optimizedBuffer, 'spa');
@@ -44,4 +44,5 @@ app.post('/api/extract', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+
 app.listen(PORT, () => console.log(`Servidor en puerto ${PORT}`));
