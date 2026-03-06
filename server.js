@@ -7,12 +7,15 @@ app.use(express.json({ limit: '10mb' }));
 
 // 1. Configuración de Google Vision con tu JSON del archivo project-bd5c4921...
 let client;
+// Cambia tu bloque de configuración por este para investigar el error:
 try {
-    const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
+    const rawCreds = process.env.GOOGLE_CREDENTIALS;
+    console.log("Contenido de la variable:", rawCreds ? "Recibida (OK)" : "VACÍA (UNDEFINED)");
+    const credentials = JSON.parse(rawCreds);
     client = new vision.ImageAnnotatorClient({ credentials });
     console.log("✅ Conectado a Google Cloud Vision: " + credentials.project_id);
 } catch (error) {
-    console.error("❌ Error con las credenciales de Google:", error.message);
+    console.error("❌ Error detallado:", error.message);
 }
 
 app.post('/api/extract', async (req, res) => {
@@ -51,4 +54,5 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Servidor OCR de Google listo en puerto ${PORT}`);
 });
+
 
