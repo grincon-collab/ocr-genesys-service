@@ -33,6 +33,9 @@ app.post('/api/extract', async (req, res) => {
         // 3. OCR con Google Cloud Vision (Súper rápido y no consume tu RAM)
         const [result] = await client.textDetection(imageBuffer);
         const text = result.fullTextAnnotation ? result.fullTextAnnotation.text : "";
+        console.log("=== TEXTO CRUDO DE GOOGLE ===");
+        console.log(text);
+        console.log("=============================");
         
         // 4. Limpiar y buscar la cédula (7 a 11 dígitos)
         const soloNumeros = text.replace(/\D/g, ''); 
@@ -54,5 +57,6 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Servidor OCR de Google listo en puerto ${PORT}`);
 });
+
 
 
