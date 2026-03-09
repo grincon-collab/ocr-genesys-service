@@ -26,25 +26,50 @@ app.post('/api/extract', async (req, res) => {
             return res.status(400).json({ error: "Falta el campo ocrBase64" });
         }
 
-        // 2. Convertir Base64 a Buffer (Sin Sharp, Google lo hace mejor)
+        // 1. Convertir Base64 a Buffer
         const base64Data = ocrBase64.replace(/^data:image\/\w+;base64,/, "");
         const imageBuffer = Buffer.from(base64Data, 'base64');
 
-        // 3. OCR con Google Cloud Vision (Súper rápido y no consume tu RAM)
+        // 2. OCR con Google Cloud Vision
         const [result] = await client.textDetection(imageBuffer);
         const text = result.fullTextAnnotation ? result.fullTextAnnotation.text : "";
-        console.log("=== TEXTO CRUDO DE GOOGLE ===");
-        console.log(text);
-        console.log("=============================");
         
-        // 4. Limpiar y buscar la cédula (7 a 11 dígitos)
+        // 3. Separar el texto línea por línea y limpiarlo
+        const lineas = text.split('\n').map(l => l.trim().toUpperCase()).filter(l => l !== '');
+
+        // --- INICIO DE LA FASE 2: EXTRACCIÓN AVANZADA ---
+        
+        // A. Extraer Cédula (Mantenemos el filtro infalible)
         const soloNumeros = text.replace(/\D/g, ''); 
         const match = soloNumeros.match(/\d{7,11}/);
+        const cedulaExtraida = match ? match[0] : "No detectada";
 
-        // Respuesta limpia para Genesys
+        // B. Extraer Apellidos (Buscamos la palabra APELLIDOS y tomamos la línea anterior)
+        let apellidosExtraidos = "No detectados";
+        const idxApellidos = lineas.findIndex(l => l === 'APELLIDOS');
+        if (idxApellidos > 0) {
+            apellidosExtraidos = lineas[idxApellidos - 1]; // Toma la línea de arriba
+        }
+
+        // C. Extraer Nombres (Buscamos la palabra NOMBRES y tomamos la línea anterior)
+        let nombresExtraidos = "No detectados";
+        const idxNombres = lineas.findIndex(l => l === 'NOMBRES');
+        if (idxNombres > 0) {
+            nombresExtraidos = lineas[idxNombres - 1]; // Toma la línea de arriba
+        }
+
+        // 4. Respuesta enriquecida para Genesys
         res.json({
-            cedula: match ? match[0] : "No detectada"
+            cedula: cedulaExtraida,
+            nombres: nombresExtraidos,
+            apellidos: apellidosExtraidos
         });
+
+    } catch (error) {
+        console.error("Error en OCR:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
 
     } catch (error) {
         console.error("Error en OCR:", error);
@@ -57,6 +82,7 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Servidor OCR de Google listo en puerto ${PORT}`);
 });
+
 
 
 
