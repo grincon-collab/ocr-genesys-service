@@ -40,33 +40,39 @@ app.post('/api/extract', async (req, res) => {
         // 4. Separar el texto línea por línea y limpiarlo
         const lineas = text.split('\n').map(l => l.trim().toUpperCase()).filter(l => l !== '');
 
-        // --- FASE 2: EXTRACCIÓN AVANZADA ---
+        // --- FASE 2: EXTRACCIÓN AVANZADA (VERSIÓN MEJORADA) ---
         
         // A. Extraer Cédula
         const soloNumeros = text.replace(/\D/g, ''); 
         const match = soloNumeros.match(/\d{7,11}/);
         const cedulaExtraida = match ? match[0] : "No detectada";
 
-        // B. Extraer Apellidos (Línea anterior a "APELLIDOS")
+        // B. Extraer Apellidos (Busca cualquier línea que contenga la palabra APELLIDO)
         let apellidosExtraidos = "No detectados";
-        const idxApellidos = lineas.findIndex(l => l === 'APELLIDOS');
+        const idxApellidos = lineas.findIndex(l => l.includes('APELLIDO'));
         if (idxApellidos > 0) {
             apellidosExtraidos = lineas[idxApellidos - 1]; 
         }
 
-        // C. Extraer Nombres (Línea anterior a "NOMBRES")
+        // C. Extraer Nombres (Busca cualquier línea que contenga la palabra NOMBRE)
         let nombresExtraidos = "No detectados";
-        const idxNombres = lineas.findIndex(l => l === 'NOMBRES');
+        const idxNombres = lineas.findIndex(l => l.includes('NOMBRE'));
         if (idxNombres > 0) {
             nombresExtraidos = lineas[idxNombres - 1];
         }
 
-        // 5. Respuesta enriquecida para Genesys
-        res.json({
+        // 5. Preparamos y enviamos la respuesta
+        const respuestaFinal = {
             cedula: cedulaExtraida,
             nombres: nombresExtraidos,
             apellidos: apellidosExtraidos
-        });
+        };
+
+        // Imprimimos en Render para saber si el filtro funcionó
+        console.log("=== ENVIANDO A GENESYS ===");
+        console.log(respuestaFinal);
+
+        res.json(respuestaFinal);
 
     } catch (error) {
         console.error("Error en OCR:", error);
