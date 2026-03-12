@@ -1,49 +1,154 @@
 const express = require('express');
 const vision = require('@google-cloud/vision');
+const crypto = require('crypto');
 const app = express();
 
-// Genesys envía Base64 largos, permitimos hasta 10MB
-app.use(express.json({ limit: '10mb' }));
+// ──────────────────────────────────────────────
+// CONFIGURACIÓN
+// ──────────────────────────────────────────────
+const PORT = process.env.PORT || 10000;
+const API_KEY = process.env.OCR_API_KEY || 'ITX-OCR-SECRET-2026';
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;  // 1 minuto
+const RATE_LIMIT_MAX = 30;                // 30 peticiones por minuto por IP
+const MAX_BASE64_SIZE_MB = 10;
+const MIN_IMAGE_SIZE_KB = 40;
+const MIN_CONFIDENCE = 0.80;
 
-// 1. Configuración de Google Vision con tu JSON de variables de entorno
-let client;
+// ──────────────────────────────────────────────
+// GOOGLE VISION - INICIALIZACIÓN SEGURA
+// ──────────────────────────────────────────────
+let client = null;
+let visionReady = false;
+
 try {
     const rawCreds = process.env.GOOGLE_CREDENTIALS;
-    console.log("Contenido de la variable:", rawCreds ? "Recibida (OK)" : "VACÍA (UNDEFINED)");
+    if (!rawCreds) {
+        throw new Error('Variable GOOGLE_CREDENTIALS no está definida');
+    }
     const credentials = JSON.parse(rawCreds);
     client = new vision.ImageAnnotatorClient({ credentials });
-    console.log("✅ Conectado a Google Cloud Vision: " + credentials.project_id);
+    visionReady = true;
+    console.log(`✅ Google Cloud Vision conectado: ${credentials.project_id}`);
 } catch (error) {
-    console.error("❌ Error detallado:", error.message);
+    console.error(`❌ Google Vision NO inicializado: ${error.message}`);
+    console.error('El servidor arrancará pero rechazará peticiones OCR.');
+}
+
+// ──────────────────────────────────────────────
+// RATE LIMITING (sin dependencia externa)
+// ──────────────────────────────────────────────
+const rateLimitMap = new Map();
+
+setInterval(() => {
+    rateLimitMap.clear();
+}, RATE_LIMIT_WINDOW_MS);
+
+function rateLimit(req, res, next) {
+    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    const count = rateLimitMap.get(ip) || 0;
+
+    if (count >= RATE_LIMIT_MAX) {
+        console.log(`[RATE LIMIT] IP bloqueada: ${ip} (${count} peticiones en ventana)`);
+        return res.status(429).json({
+            error: 'Demasiadas solicitudes. Intente en 1 minuto.'
+        });
+    }
+
+    rateLimitMap.set(ip, count + 1);
+    next();
+}
+
+// ──────────────────────────────────────────────
+// MIDDLEWARE
+// ──────────────────────────────────────────────
+app.use(express.json({ limit: `${MAX_BASE64_SIZE_MB}mb` }));
+
+// Cabeceras de seguridad (sin helmet, manual)
+app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+});
+
+// ──────────────────────────────────────────────
+// AUTENTICACIÓN
+// ──────────────────────────────────────────────
+function authenticate(req, res, next) {
+    const apiKey = req.headers['x-api-key'];
+
+    if (!apiKey) {
+        return res.status(401).json({ error: 'Se requiere header x-api-key' });
+    }
+
+    // Comparación timing-safe
+    try {
+        const keyBuffer = Buffer.from(apiKey);
+        const secretBuffer = Buffer.from(API_KEY);
+        if (keyBuffer.length !== secretBuffer.length || !crypto.timingSafeEqual(keyBuffer, secretBuffer)) {
+            return res.status(401).json({ error: 'API key inválida' });
+        }
+    } catch {
+        return res.status(401).json({ error: 'API key inválida' });
+    }
+
+    next();
+}
+
+// ──────────────────────────────────────────────
+// VALIDACIÓN DE IMAGEN
+// ──────────────────────────────────────────────
+function validateImageBase64(ocrBase64) {
+    if (!ocrBase64 || typeof ocrBase64 !== 'string') {
+        return { valid: false, error: 'Falta el campo ocrBase64' };
+    }
+
+    // Limpiar prefijo data URI si viene
+    const base64Data = ocrBase64.replace(/^data:image\/\w+;base64,/, '');
+
+    // Validar que sea base64 real
+    if (!/^[A-Za-z0-9+/]+=*$/.test(base64Data.substring(0, 100))) {
+        return { valid: false, error: 'El contenido no es base64 válido' };
+    }
+
+    // Decodificar
+    const imageBuffer = Buffer.from(base64Data, 'base64');
+
+    // Validar tamaño mínimo
+    const sizeKB = imageBuffer.length / 1024;
+    if (sizeKB < MIN_IMAGE_SIZE_KB) {
+        return {
+            valid: false,
+            error: 'La imagen es muy pequeña o es una miniatura. Por favor, toma la foto más de cerca.',
+            isQuality: true
+        };
+    }
+
+    // Validar magic bytes (que sea imagen real)
+    const header = imageBuffer.subarray(0, 4);
+    const isJPEG = header[0] === 0xFF && header[1] === 0xD8;
+    const isPNG = header[0] === 0x89 && header[1] === 0x50 && header[2] === 0x4E && header[3] === 0x47;
+    const isWebP = header[0] === 0x52 && header[1] === 0x49 && header[2] === 0x46 && header[3] === 0x46;
+
+    if (!isJPEG && !isPNG && !isWebP) {
+        return { valid: false, error: 'El archivo no es una imagen válida (se requiere JPEG, PNG o WebP)' };
+    }
+
+    return { valid: true, buffer: imageBuffer, sizeKB };
 }
 
 // ============================================================
-// MÓDULO DE VALIDACIÓN DE DOCUMENTO - ESTILO AGENTE GUBERNAMENTAL
+// MÓDULO DE VALIDACIÓN DE DOCUMENTO (SIN CAMBIOS)
 // ============================================================
 
-/**
- * Palabras clave que DEBEN estar presentes en un documento de identidad colombiano.
- * Se busca al menos un mínimo de coincidencias para considerar que es un documento real.
- */
 const PALABRAS_CLAVE_DOCUMENTO = [
-    'REPUBLICA',
-    'COLOMBIA',
-    'CEDULA',
-    'CIUDADANIA',
-    'APELLIDO',
-    'NOMBRE',
-    'FECHA',
-    'NACIMIENTO',
-    'LUGAR',
-    'REGISTRADURIA',
-    'IDENTIFICACION',
-    'NUIP',
+    'REPUBLICA', 'COLOMBIA', 'CEDULA', 'CIUDADANIA',
+    'APELLIDO', 'NOMBRE', 'FECHA', 'NACIMIENTO',
+    'LUGAR', 'REGISTRADURIA', 'IDENTIFICACION', 'NUIP',
 ];
 
-/**
- * Patrones sospechosos que indican que NO es un documento válido.
- * (facturas, recibos, capturas de pantalla, etc.)
- */
 const PATRONES_NO_DOCUMENTO = [
     'FACTURA', 'INVOICE', 'RECIBO', 'TOTAL', 'SUBTOTAL',
     'PRECIO', 'PAGO', 'TRANSFERENCIA', 'NEQUI', 'DAVIPLATA',
@@ -53,19 +158,7 @@ const PATRONES_NO_DOCUMENTO = [
     'WIFI', 'SSID', 'HTTP', 'WWW', '.COM', '.CO',
 ];
 
-/**
- * Valida si el texto extraído corresponde a un documento de identidad colombiano.
- * Retorna { esValido: boolean, razon: string }
- * 
- * CRITERIOS (estilo agente gubernamental):
- *   1. Debe tener suficiente texto (no puede ser una imagen vacía o un garabato)
- *   2. Debe contener palabras clave de un documento de identidad
- *   3. Debe contener un número que parezca una cédula (7 a 11 dígitos)
- *   4. No debe contener patrones que delaten otro tipo de documento
- *   5. Debe tener una estructura mínima de líneas (un documento real tiene varias líneas)
- */
 function validarDocumentoIdentidad(textoCompleto, lineas) {
-    // --- CRITERIO 1: Texto suficiente ---
     if (!textoCompleto || textoCompleto.length < 30) {
         return {
             esValido: false,
@@ -73,7 +166,6 @@ function validarDocumentoIdentidad(textoCompleto, lineas) {
         };
     }
 
-    // --- CRITERIO 2: Mínimo de líneas (un documento real tiene estructura) ---
     if (lineas.length < 4) {
         return {
             esValido: false,
@@ -83,37 +175,26 @@ function validarDocumentoIdentidad(textoCompleto, lineas) {
 
     const textoUpper = textoCompleto.toUpperCase();
 
-    // --- CRITERIO 3: Detectar si es otro tipo de documento (no una cédula) ---
     let contadorSospechoso = 0;
-    const palabrasSospechosasEncontradas = [];
     for (const patron of PATRONES_NO_DOCUMENTO) {
         if (textoUpper.includes(patron)) {
             contadorSospechoso++;
-            palabrasSospechosasEncontradas.push(patron);
         }
     }
-    // Si tiene 2+ palabras sospechosas, muy probablemente NO es una cédula
     if (contadorSospechoso >= 2) {
-        console.log("⚠️ Palabras sospechosas detectadas:", palabrasSospechosasEncontradas.join(', '));
         return {
             esValido: false,
             razon: "La imagen parece ser otro tipo de documento (factura, recibo, captura de pantalla, etc.). Por favor, envía únicamente tu cédula de ciudadanía."
         };
     }
 
-    // --- CRITERIO 4: Debe contener palabras clave de documento de identidad ---
     let coincidenciasDocumento = 0;
-    const palabrasEncontradas = [];
     for (const palabra of PALABRAS_CLAVE_DOCUMENTO) {
         if (textoUpper.includes(palabra)) {
             coincidenciasDocumento++;
-            palabrasEncontradas.push(palabra);
         }
     }
 
-    console.log(`🔍 Palabras clave de documento encontradas (${coincidenciasDocumento}/${PALABRAS_CLAVE_DOCUMENTO.length}):`, palabrasEncontradas.join(', '));
-
-    // Necesitamos al menos 3 coincidencias para considerar que es un documento real
     if (coincidenciasDocumento < 3) {
         return {
             esValido: false,
@@ -121,7 +202,6 @@ function validarDocumentoIdentidad(textoCompleto, lineas) {
         };
     }
 
-    // --- CRITERIO 5: Debe haber un número que parezca cédula (7-11 dígitos) ---
     const soloDigitos = textoCompleto.replace(/\D/g, '');
     const tieneCedula = /\d{7,11}/.test(soloDigitos);
     if (!tieneCedula) {
@@ -131,94 +211,81 @@ function validarDocumentoIdentidad(textoCompleto, lineas) {
         };
     }
 
-    // ✅ Pasó todos los filtros
     return { esValido: true, razon: null };
 }
 
 // ============================================================
-// ENDPOINT PRINCIPAL (ESTRUCTURA DE RESPUESTA SIN CAMBIOS)
+// ENDPOINT PRINCIPAL
 // ============================================================
 
-app.post('/api/extract', async (req, res) => {
+app.post('/api/extract', rateLimit, authenticate, async (req, res) => {
+    // Verificar que Google Vision está listo
+    if (!visionReady || !client) {
+        return res.status(503).json({
+            error: 'Servicio OCR no disponible temporalmente. Intente más tarde.'
+        });
+    }
+
     try {
         const { ocrBase64 } = req.body;
 
-        if (!ocrBase64) {
-            return res.status(400).json({ error: "Falta el campo ocrBase64" });
+        // Validar imagen
+        const imageCheck = validateImageBase64(ocrBase64);
+        if (!imageCheck.valid) {
+            if (imageCheck.isQuality) {
+                return res.json({ calidadAprobada: false, mensajeRechazo: imageCheck.error });
+            }
+            return res.status(400).json({ error: imageCheck.error });
         }
 
-        // 2. Convertir Base64 a Buffer
-        const base64Data = ocrBase64.replace(/^data:image\/\w+;base64,/, "");
-        const imageBuffer = Buffer.from(base64Data, 'base64');
+        // Ejecutar Google Cloud Vision
+        const [result] = await client.textDetection(imageCheck.buffer);
 
-        // --- INICIO FASE 2.5: FILTRO DE CALIDAD "NINJA" ---
-        // Filtro de Tamaño Físico (Rechaza si pesa menos de 40 KB)
-        const sizeInKB = imageBuffer.length / 1024;
-        if (sizeInKB < 40) {
-            console.log("⚠️ Imagen rechazada por tamaño miniatura:", sizeInKB.toFixed(2), "KB");
-            return res.json({ 
-                calidadAprobada: false, 
-                mensajeRechazo: "La imagen es muy pequeña o es una miniatura. Por favor, toma la foto más de cerca." 
-            });
-        }
-
-        // Ejecutar Google Cloud Vision (UNA SOLA LLAMADA para todo)
-        const [result] = await client.textDetection(imageBuffer);
-        
-        // Filtro de Claridad (Confidence Score de Google)
+        // Filtro de Claridad
         let confidence = 0;
         if (result.fullTextAnnotation && result.fullTextAnnotation.pages.length > 0) {
-            confidence = result.fullTextAnnotation.pages[0].confidence || 0; 
+            confidence = result.fullTextAnnotation.pages[0].confidence || 0;
         }
 
-        // Si Google está menos del 80% (0.80) seguro, significa que está borrosa
-        if (confidence > 0 && confidence < 0.80) {
-             console.log("⚠️ Imagen rechazada por baja calidad/borrosa. Score:", confidence);
-             return res.json({ 
-                calidadAprobada: false, 
-                mensajeRechazo: "La foto está borrosa o tiene reflejos de luz. Por favor, tómala de nuevo." 
+        if (confidence > 0 && confidence < MIN_CONFIDENCE) {
+            return res.json({
+                calidadAprobada: false,
+                mensajeRechazo: "La foto está borrosa o tiene reflejos de luz. Por favor, tómala de nuevo."
             });
         }
-        // --- FIN FASE 2.5 ---
 
-        // 3. Separar el texto línea por línea y limpiarlo
+        // Separar texto línea por línea
         const text = result.fullTextAnnotation ? result.fullTextAnnotation.text : "";
         const lineas = text.split('\n').map(l => l.trim().toUpperCase()).filter(l => l !== '');
 
-        // --- FASE 3: VALIDACIÓN DE DOCUMENTO ESTILO AGENTE GUBERNAMENTAL ---
+        // Validación de documento
         const validacion = validarDocumentoIdentidad(text, lineas);
         if (!validacion.esValido) {
-            console.log("🚫 Documento rechazado:", validacion.razon);
+            console.log(`[OCR] Documento rechazado: ${validacion.razon.substring(0, 60)}...`);
             return res.json({
                 calidadAprobada: false,
                 mensajeRechazo: validacion.razon
             });
         }
-        console.log("✅ Documento validado como cédula de ciudadanía colombiana");
-        // --- FIN FASE 3 ---
 
-        // --- FASE 2: EXTRACCIÓN AVANZADA (SIN CAMBIOS) ---
-        
-        // A. Extraer Cédula
-        const soloNumeros = text.replace(/\D/g, ''); 
+        // Extracción de datos
+        const soloNumeros = text.replace(/\D/g, '');
         const match = soloNumeros.match(/\d{7,11}/);
         const cedulaExtraida = match ? match[0] : "No detectada";
 
-        // B. Extraer Apellidos 
         let apellidosExtraidos = "No detectados";
         const idxApellidos = lineas.findIndex(l => l.includes('APELLIDO'));
         if (idxApellidos > 0) {
-            apellidosExtraidos = lineas[idxApellidos - 1]; 
+            apellidosExtraidos = lineas[idxApellidos - 1];
         }
 
-        // C. Extraer Nombres
         let nombresExtraidos = "No detectados";
         const idxNombres = lineas.findIndex(l => l.includes('NOMBRE'));
         if (idxNombres > 0) {
             nombresExtraidos = lineas[idxNombres - 1];
         }
 
-        // 4. Preparamos y enviamos la respuesta (MISMA ESTRUCTURA EXACTA)
+        // Respuesta (MISMA ESTRUCTURA EXACTA)
         const respuestaFinal = {
             calidadAprobada: true,
             cedula: cedulaExtraida,
@@ -226,19 +293,31 @@ app.post('/api/extract', async (req, res) => {
             apellidos: apellidosExtraidos
         };
 
-        console.log("=== ENVIANDO A GENESYS ===");
-        console.log(respuestaFinal);
+        // Log seguro (sin PII)
+        console.log(`[OCR] ✅ Documento procesado. Cédula detectada: ${cedulaExtraida ? 'Sí' : 'No'}`);
 
         res.json(respuestaFinal);
 
     } catch (error) {
-        console.error("Error en OCR:", error);
-        res.status(500).json({ error: error.message });
+        console.error(`[OCR] Error: ${error.message}`);
+        // No exponer detalles internos al cliente
+        res.status(500).json({
+            error: 'Error interno al procesar la imagen. Intente nuevamente.'
+        });
     }
 });
 
-// Arrancar el servidor
-const PORT = process.env.PORT || 10000;
+// Health check (sin autenticación, es público)
+app.get('/health', (req, res) => {
+    res.json({
+        status: visionReady ? 'ok' : 'degraded',
+        vision: visionReady ? 'connected' : 'disconnected'
+    });
+});
+
+// ──────────────────────────────────────────────
+// INICIAR
+// ──────────────────────────────────────────────
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Servidor OCR de Google listo en puerto ${PORT}`);
+    console.log(`🚀 Servidor OCR seguro en puerto ${PORT}`);
 });
