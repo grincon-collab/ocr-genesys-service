@@ -1,6 +1,7 @@
 {
   "name": "ocr-api-genesys",
-  "version": "1.0.0",
+  "version": "2.0.0",
+  "description": "API OCR segura para validación de documentos de identidad colombianos - ITX",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -8,5 +9,8 @@
   "dependencies": {
     "express": "^4.18.2",
     "@google-cloud/vision": "^4.0.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
