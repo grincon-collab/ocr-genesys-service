@@ -1,4 +1,41 @@
+# Dependencias
 node_modules
+
+# Variables de entorno (CRÍTICO: contiene credenciales)
 .env
+.env.*
+.env.local
+.env.production
+
+# Imágenes de prueba con PII (documentos de identidad)
 documento_final.png
 opt_*.png
+*.jpg
+*.jpeg
+*.png
+*.webp
+
+# Excepción: imágenes del proyecto que SÍ deben ir al repo
+!public/assets/**
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Credenciales de Google Cloud (CRÍTICO)
+*.json
+!package.json
+!package-lock.json
+
+# Uploads temporales
+uploads/
+temp/
