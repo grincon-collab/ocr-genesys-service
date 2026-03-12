@@ -53,8 +53,8 @@
 [Referencia de fuente del esquema: 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109]5.3. Código Fuente del Puente JavaScript// Descomenta la siguiente línea si usas Node 16 o inferior en tu servidor/Lambda:
 // const fetch = require('node-fetch');
 exports.handler = async (args) => {
-  const clientId      = 'a262a6f6-a6cb-4660-8346-343badd3179a';
-  const clientSecret  = 'YEDL1H8eVeynwwiKMF09D9-RfXkELUjkzBbEtqPxQNo';
+  const clientId      = 
+  const clientSecret  = 
   const loginBase     = 'https://login.mypurecloud.com';
   const apiBase       = 'https://api.mypurecloud.com';
   const ocrApiUrl     = 'https://ocr-genesys-service.onrender.com/api/extract';
