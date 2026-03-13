@@ -16,21 +16,16 @@ const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const RATE_LIMIT_MAX = 30;
 const MAX_BASE64_SIZE_MB = 10;
 const MIN_IMAGE_SIZE_KB = 40;
-const MIN_CONFIDENCE = 0.80;
 
 // ──────────────────────────────────────────────
 // MIDDLEWARES DE SEGURIDAD (Blindaje A+)
 // ──────────────────────────────────────────────
-
-// 2. Configuración de Helmet optimizada para pasar los reportes
 app.use(helmet({
-    // SOLUCIÓN: HSTS (Strict-Transport-Security)
     hsts: {
-        maxAge: 31536000, // 1 año
+        maxAge: 31536000,
         includeSubDomains: true,
         preload: true
     },
-    // SOLUCIÓN: Permissions-Policy
     permissionsPolicy: {
         features: {
             camera: ["'none'"],
@@ -39,7 +34,6 @@ app.use(helmet({
             payment: ["'none'"]
         }
     },
-    // Otras políticas de aislamiento
     crossOriginResourcePolicy: { policy: "cross-origin" },
     contentSecurityPolicy: {
         directives: {
@@ -71,7 +65,7 @@ try {
 }
 
 // ──────────────────────────────────────────────
-// RATE LIMITING
+// SEGURIDAD: RATE LIMITING & AUTH
 // ──────────────────────────────────────────────
 const rateLimitMap = new Map();
 setInterval(() => { rateLimitMap.clear(); }, RATE_LIMIT_WINDOW_MS);
@@ -79,51 +73,40 @@ setInterval(() => { rateLimitMap.clear(); }, RATE_LIMIT_WINDOW_MS);
 function rateLimit(req, res, next) {
     const ip = req.headers['x-forwarded-for'] || req.ip || 'unknown';
     const count = rateLimitMap.get(ip) || 0;
-
-    if (count >= RATE_LIMIT_MAX) {
-        return res.status(429).json({ error: 'Demasiadas solicitudes.' });
-    }
+    if (count >= RATE_LIMIT_MAX) return res.status(429).json({ error: 'Demasiadas solicitudes.' });
     rateLimitMap.set(ip, count + 1);
     next();
 }
 
-// ──────────────────────────────────────────────
-// AUTENTICACIÓN
-// ──────────────────────────────────────────────
 function authenticate(req, res, next) {
     const apiKey = req.headers['x-api-key'];
     if (!apiKey) return res.status(401).json({ error: 'Se requiere API Key' });
-
     try {
         const keyBuffer = Buffer.from(apiKey);
         const secretBuffer = Buffer.from(API_KEY);
         if (keyBuffer.length !== secretBuffer.length || !crypto.timingSafeEqual(keyBuffer, secretBuffer)) {
             return res.status(401).json({ error: 'API key inválida' });
         }
-    } catch {
-        return res.status(401).json({ error: 'API key inválida' });
-    }
+    } catch { return res.status(401).json({ error: 'API key inválida' }); }
     next();
 }
 
 // ──────────────────────────────────────────────
-// FUNCIONES DE APOYO (Tu lógica de validación aquí)
+// FUNCIONES DE APOYO
 // ──────────────────────────────────────────────
 function validateImageBase64(ocrBase64) {
     if (!ocrBase64 || typeof ocrBase64 !== 'string') return { valid: false, error: 'Falta ocrBase64' };
     const base64Data = ocrBase64.replace(/^data:image\/\w+;base64,/, '');
     const imageBuffer = Buffer.from(base64Data, 'base64');
-    if (imageBuffer.length / 1024 < MIN_IMAGE_SIZE_KB) return { valid: false, error: 'Imagen muy pequeña', isQuality: true };
+    if (imageBuffer.length / 1024 < MIN_IMAGE_SIZE_KB) return { valid: false, error: 'Imagen muy pequeña o de baja calidad' };
     return { valid: true, buffer: imageBuffer };
 }
 
 // ──────────────────────────────────────────────
-// ENDPOINT PRINCIPAL
+// ENDPOINT PRINCIPAL (CON EXTRACCIÓN REAL)
 // ──────────────────────────────────────────────
 app.post('/api/extract', rateLimit, authenticate, async (req, res) => {
-    if (!visionReady || !client) {
-        return res.status(503).json({ error: 'Servicio OCR no disponible.' });
-    }
+    if (!visionReady || !client) return res.status(503).json({ error: 'Servicio OCR no disponible.' });
 
     try {
         let ocrBase64 = req.body.ocrBase64;
@@ -136,29 +119,73 @@ app.post('/api/extract', rateLimit, authenticate, async (req, res) => {
             return res.json({ calidadAprobada: false, mensajeRechazo: imageCheck.error });
         }
 
+        // 1. Llamada a Google Vision
         const [result] = await client.textDetection(imageCheck.buffer);
+        const fullText = result.fullTextAnnotation ? result.fullTextAnnotation.text : "";
         imageCheck.buffer = null; 
 
-        // --- TU LÓGICA DE EXTRACCIÓN (Nombres, Apellidos, Cédula) ---
-        // (Agrega aquí tu lógica de procesamiento de 'result')
-        
+        if (!fullText) {
+            return res.json({ calidadAprobada: false, mensajeRechazo: "No se detectó texto en el documento. Asegúrese de que haya buena luz." });
+        }
+
+        // 2. Lógica de Extracción de Datos (ITX Logic)
+        const textoLimpio = fullText.toUpperCase();
+        const lineas = textoLimpio.split('\n').map(l => l.trim());
+
+        // A. Extraer Cédula (Busca números de 7-10 dígitos)
+        const cedulaMatch = textoLimpio.match(/(?:NUMERO|CEDULA|DENTIDAD|NÚMERO|NUIP)\s*[:.]?\s*([\d. ]{7,15})/i);
+        let cedula = cedulaMatch ? cedulaMatch[1].replace(/\D/g, '') : "";
+
+        // B. Extraer Nombres y Apellidos
+        let nombres = "";
+        let apellidos = "";
+
+        lineas.forEach((linea, index) => {
+            // Cédula Amarilla Tradicional
+            if (linea.includes("APELLIDOS")) {
+                apellidos = lineas[index + 1] || "";
+            }
+            if (linea.includes("NOMBRES")) {
+                nombres = lineas[index + 1] || "";
+            }
+            // Soporte para Cédula Digital (etiquetas juntas)
+            if (linea.startsWith("APELLIDOS") && linea.length > 10) {
+                apellidos = linea.replace("APELLIDOS", "").trim();
+            }
+            if (linea.startsWith("NOMBRES") && linea.length > 8) {
+                nombres = linea.replace("NOMBRES", "").trim();
+            }
+        });
+
+        // C. Validación de confianza básica
+        if (nombres === "" && apellidos === "" && cedula === "") {
+            return res.json({ 
+                calidadAprobada: false, 
+                mensajeRechazo: "No se pudieron identificar los campos del documento." 
+            });
+        }
+
+        // 3. Respuesta Exitosa
         res.json({
             calidadAprobada: true,
-            cedula: "Extraída correctamente",
-            nombres: "...", 
-            apellidos: "..."
+            cedula: cedula || "No detectada",
+            nombres: nombres || "No detectado",
+            apellidos: apellidos || "No detectado",
+            infoAdicional: {
+                tipoDocumento: textoLimpio.includes("COLOMBIA") ? "Cédula Colombiana" : "Desconocido"
+            }
         });
 
     } catch (error) {
         console.error(`[OCR] Error: ${error.message}`);
-        res.status(500).json({ error: 'Error interno.' });
+        res.status(500).json({ error: 'Error interno procesando la imagen.' });
     }
 });
 
 app.get('/health', (req, res) => {
-    res.json({ status: visionReady ? 'ok' : 'degraded' });
+    res.json({ status: visionReady ? 'ok' : 'degraded', service: 'ITX-OCR' });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🛡️ Servidor OCR blindado (HSTS + Permissions) en puerto ${PORT}`);
+    console.log(`🛡️ Servidor OCR blindado en puerto ${PORT}`);
 });
