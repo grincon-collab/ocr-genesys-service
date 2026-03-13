@@ -128,17 +128,19 @@ app.post('/api/extract', rateLimit, authenticate, async (req, res) => {
             return res.json({ calidadAprobada: false, mensajeRechazo: "No se detectó texto en el documento. Asegúrese de que haya buena luz." });
         }
 
-// 2. Lógica de Extracción (ITX Logic v5 - Inteligencia de Dirección)
-        // Convertimos el texto a un array limpio, línea por línea
-        const textoCrudoArray = fullText.split('\n')
+// 2. Lógica de Extracción (ITX Logic v5.1 - Inteligencia de Dirección)
+        const textoLimpio = fullText.toUpperCase(); // ¡Esta era la variable que faltaba!
+        
+        // Convertimos el texto a un array limpio
+        const textoCrudoArray = textoLimpio.split('\n')
             .map(l => l.trim().replace(/[^A-Z0-9 Ñ]/gi, ""))
-            .filter(l => l.length > 2); // Quitamos basura de 1 o 2 letras
+            .filter(l => l.length > 2); // Quitamos basura
         
         let nombres = "";
         let apellidos = "";
         let cedula = "";
 
-        // A. Extraer Cédula (Seguro contra cualquier desorden)
+        // A. Extraer Cédula
         const textoLimpioStr = textoCrudoArray.join(" ");
         const cedulaMatch = textoLimpioStr.match(/(?:NUMERO|CEDULA|DENTIDAD|NÚMERO|NUIP|Nº)\s*([\d]{7,15})/i);
         cedula = cedulaMatch ? cedulaMatch[1] : "";
@@ -148,11 +150,10 @@ app.post('/api/extract', rateLimit, authenticate, async (req, res) => {
         const idxNombres = textoCrudoArray.findIndex(l => l === "NOMBRES" || l.includes("NOMBRES"));
 
         if (idxApellidos !== -1 && idxNombres !== -1) {
-            // MAGIA ITX 🪄: Detectar dirección de lectura (Bottom-Up vs Top-Down)
             // Revisamos la línea que está justo ANTES de "APELLIDOS"
             const lineaAnterior = textoCrudoArray[idxApellidos - 1] || "";
             
-            // Si la línea anterior es solo texto (sin números ni palabras del encabezado), Google leyó al revés.
+            // Detectar dirección de lectura de Google
             const esBottomUp = /^[A-Z Ñ]+$/.test(lineaAnterior) && 
                                !lineaAnterior.includes("NUMERO") && 
                                !lineaAnterior.includes("CEDULA") && 
@@ -160,21 +161,33 @@ app.post('/api/extract', rateLimit, authenticate, async (req, res) => {
 
             if (esBottomUp) {
                 // Leyó: Valor -> Etiqueta
-                apellidos = textoCrudoArray[idxApellidos - 1];
-                nombres = textoCrudoArray[idxNombres - 1];
+                apellidos = textoCrudoArray[idxApellidos - 1] || "";
+                nombres = textoCrudoArray[idxNombres - 1] || "";
             } else {
-                // Leyó: Etiqueta -> Valor (Lectura Normal)
-                apellidos = textoCrudoArray[idxApellidos + 1];
-                nombres = textoCrudoArray[idxNombres + 1];
+                // Leyó: Etiqueta -> Valor
+                apellidos = textoCrudoArray[idxApellidos + 1] || "";
+                nombres = textoCrudoArray[idxNombres + 1] || "";
             }
         }
 
-        // C. Limpieza final por si el OCR pegó la firma al nombre
+        // C. Limpieza final
         const limpiar = (txt) => (txt || "").replace(/(APELLIDOS|NOMBRES|REPUBLICA|COLOMBIA|CEDULA|FIRMA|CIUDADANIA)/g, "").trim();
         nombres = limpiar(nombres);
         apellidos = limpiar(apellidos);
 
-        // 3. Respuesta Exitosa
+        // 3. Respuesta Final Segura
+        res.json({
+            calidadAprobada: true,
+            cedula: cedula || "No detectada",
+            nombres: nombres || "No detectado",
+            apellidos: apellidos || "No detectado",
+            infoAdicional: {
+                tipoDocumento: textoLimpio.includes("COLOMBIA") ? "Cédula Colombiana" : "Desconocido",
+                nombreCompleto: `${nombres} ${apellidos}`.trim(),
+                textoCrudo: textoLimpio.replace(/\n/g, " | ") 
+            }
+        });
+        
 // 3. Respuesta Final con Debugging Activado
         res.json({
             calidadAprobada: true,
@@ -202,6 +215,7 @@ app.get('/health', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🛡️ Servidor OCR blindado en puerto ${PORT}`);
 });
+
 
 
 
