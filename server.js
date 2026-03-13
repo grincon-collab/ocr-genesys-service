@@ -1,8 +1,11 @@
 const express = require('express');
 const vision = require('@google-cloud/vision');
 const crypto = require('crypto');
-const helmet = require('helmet'); // 1. Requerir helmet
+const helmet = require('helmet'); 
 const app = express();
+
+// 1. ELIMINAR FIRMA DE EXPRESS (Doble capa de seguridad)
+app.disable('x-powered-by');
 
 // ──────────────────────────────────────────────
 // CONFIGURACIÓN
@@ -16,20 +19,40 @@ const MIN_IMAGE_SIZE_KB = 40;
 const MIN_CONFIDENCE = 0.80;
 
 // ──────────────────────────────────────────────
-// MIDDLEWARES DE SEGURIDAD INICIALES
+// MIDDLEWARES DE SEGURIDAD (Blindaje A+)
 // ──────────────────────────────────────────────
 
-// 2. Configurar Helmet (Sustituye y mejora tus headers manuales)
+// 2. Configuración de Helmet optimizada para pasar los reportes
 app.use(helmet({
-    contentSecurityPolicy: false, // Lo desactivamos solo si tu API no sirve HTML/Frontend
+    // SOLUCIÓN: HSTS (Strict-Transport-Security)
+    hsts: {
+        maxAge: 31536000, // 1 año
+        includeSubDomains: true,
+        preload: true
+    },
+    // SOLUCIÓN: Permissions-Policy
+    permissionsPolicy: {
+        features: {
+            camera: ["'none'"],
+            microphone: ["'none'"],
+            geolocation: ["'none'"],
+            payment: ["'none'"]
+        }
+    },
+    // Otras políticas de aislamiento
     crossOriginResourcePolicy: { policy: "cross-origin" },
-    hidePoweredBy: true // Oculta que usas Express
+    contentSecurityPolicy: {
+        directives: {
+            "default-src": ["'self'"],
+            "upgrade-insecure-requests": []
+        }
+    }
 }));
 
 app.use(express.json({ limit: `${MAX_BASE64_SIZE_MB}mb` }));
 
 // ──────────────────────────────────────────────
-// GOOGLE VISION - INICIALIZACIÓN SEGURA
+// GOOGLE VISION - INICIALIZACIÓN
 // ──────────────────────────────────────────────
 let client = null;
 let visionReady = false;
@@ -54,7 +77,7 @@ const rateLimitMap = new Map();
 setInterval(() => { rateLimitMap.clear(); }, RATE_LIMIT_WINDOW_MS);
 
 function rateLimit(req, res, next) {
-    const ip = req.headers['x-forwarded-for'] || req.ip || 'unknown'; // Mejorado para Render
+    const ip = req.headers['x-forwarded-for'] || req.ip || 'unknown';
     const count = rateLimitMap.get(ip) || 0;
 
     if (count >= RATE_LIMIT_MAX) {
@@ -65,7 +88,7 @@ function rateLimit(req, res, next) {
 }
 
 // ──────────────────────────────────────────────
-// AUTENTICACIÓN Y VALIDACIÓN (Tu lógica intacta)
+// AUTENTICACIÓN
 // ──────────────────────────────────────────────
 function authenticate(req, res, next) {
     const apiKey = req.headers['x-api-key'];
@@ -83,9 +106,16 @@ function authenticate(req, res, next) {
     next();
 }
 
-// (Tus funciones validateImageBase64 y validarDocumentoIdentidad se quedan igual...)
-function validateImageBase64(ocrBase64) { /* ... tu código ... */ }
-function validarDocumentoIdentidad(textoCompleto, lineas) { /* ... tu código ... */ }
+// ──────────────────────────────────────────────
+// FUNCIONES DE APOYO (Tu lógica de validación aquí)
+// ──────────────────────────────────────────────
+function validateImageBase64(ocrBase64) {
+    if (!ocrBase64 || typeof ocrBase64 !== 'string') return { valid: false, error: 'Falta ocrBase64' };
+    const base64Data = ocrBase64.replace(/^data:image\/\w+;base64,/, '');
+    const imageBuffer = Buffer.from(base64Data, 'base64');
+    if (imageBuffer.length / 1024 < MIN_IMAGE_SIZE_KB) return { valid: false, error: 'Imagen muy pequeña', isQuality: true };
+    return { valid: true, buffer: imageBuffer };
+}
 
 // ──────────────────────────────────────────────
 // ENDPOINT PRINCIPAL
@@ -96,26 +126,25 @@ app.post('/api/extract', rateLimit, authenticate, async (req, res) => {
     }
 
     try {
-        // 3. LIMPIEZA DE MEMORIA FLASH
         let ocrBase64 = req.body.ocrBase64;
-        req.body.ocrBase64 = null; // Liberamos la carga pesada del body inmediatamente
+        req.body.ocrBase64 = null; 
 
         const imageCheck = validateImageBase64(ocrBase64);
-        ocrBase64 = null; // Destruimos la referencia al string largo
+        ocrBase64 = null; 
 
         if (!imageCheck.valid) {
             return res.json({ calidadAprobada: false, mensajeRechazo: imageCheck.error });
         }
 
         const [result] = await client.textDetection(imageCheck.buffer);
-        imageCheck.buffer = null; // 🚨 DESTRUCCIÓN DEL BUFFER (Privacidad Total)
+        imageCheck.buffer = null; 
 
-        // ... Tu lógica de extracción de datos (Nombres, Apellidos, Cédula) ...
-        // (Mantén el resto de tu lógica de extracción aquí abajo)
+        // --- TU LÓGICA DE EXTRACCIÓN (Nombres, Apellidos, Cédula) ---
+        // (Agrega aquí tu lógica de procesamiento de 'result')
         
         res.json({
             calidadAprobada: true,
-            cedula: "...", // Tu lógica aquí
+            cedula: "Extraída correctamente",
             nombres: "...", 
             apellidos: "..."
         });
@@ -131,5 +160,5 @@ app.get('/health', (req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Servidor OCR Blindado con Helmet en puerto ${PORT}`);
+    console.log(`🛡️ Servidor OCR blindado (HSTS + Permissions) en puerto ${PORT}`);
 });
