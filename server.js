@@ -128,38 +128,49 @@ app.post('/api/extract', rateLimit, authenticate, async (req, res) => {
             return res.json({ calidadAprobada: false, mensajeRechazo: "No se detectó texto en el documento. Asegúrese de que haya buena luz." });
         }
 
-// 2. Lógica de Extracción (ITX Logic v4 - Método de Anclas)
-        // Limpiamos dejando solo letras, números, la Ñ y los saltos de línea
-        const textoLimpio = fullText.toUpperCase().replace(/[^A-Z0-9 Ñ\n]/gi, "");
+// 2. Lógica de Extracción (ITX Logic v5 - Inteligencia de Dirección)
+        // Convertimos el texto a un array limpio, línea por línea
+        const textoCrudoArray = fullText.split('\n')
+            .map(l => l.trim().replace(/[^A-Z0-9 Ñ]/gi, ""))
+            .filter(l => l.length > 2); // Quitamos basura de 1 o 2 letras
         
         let nombres = "";
         let apellidos = "";
+        let cedula = "";
 
-        // A. Extraer Cédula
-        const cedulaMatch = textoLimpio.match(/(?:NUMERO|CEDULA|DENTIDAD|NÚMERO|NUIP|Nº)\s*([\d. ]{7,15})/i);
-        const cedula = cedulaMatch ? cedulaMatch[1].replace(/\D/g, '') : "";
+        // A. Extraer Cédula (Seguro contra cualquier desorden)
+        const textoLimpioStr = textoCrudoArray.join(" ");
+        const cedulaMatch = textoLimpioStr.match(/(?:NUMERO|CEDULA|DENTIDAD|NÚMERO|NUIP|Nº)\s*([\d]{7,15})/i);
+        cedula = cedulaMatch ? cedulaMatch[1] : "";
 
-        // B. Extraer Apellidos: Todo lo que esté estrictamente ENTRE "APELLIDOS" y "NOMBRES"
-        const apellidosMatch = textoLimpio.match(/APELLIDOS\s+([\s\S]+?)\s+NOMBRES/i);
-        if (apellidosMatch) {
-            apellidos = apellidosMatch[1].replace(/\n/g, " ").trim();
-        }
+        // B. Encontrar en qué línea exacta están las etiquetas
+        const idxApellidos = textoCrudoArray.findIndex(l => l === "APELLIDOS" || l.includes("APELLIDOS"));
+        const idxNombres = textoCrudoArray.findIndex(l => l === "NOMBRES" || l.includes("NOMBRES"));
 
-        // C. Extraer Nombres: Todo lo que esté ENTRE "NOMBRES" y la siguiente etiqueta de la cédula
-        // (Suele ser NACIMIENTO, ESTATURA, SEXO, RH, FIRMA, etc.)
-        const nombresMatch = textoLimpio.match(/NOMBRES\s+([\s\S]+?)\s+(?:NACIMIENTO|ESTATURA|GS|SEXO|RH|FECHA|LUGAR|FIRMA|DOCUMENTO|NACIDO)/i);
-        if (nombresMatch) {
-            nombres = nombresMatch[1].replace(/\n/g, " ").trim();
-        } else {
-            // Plan B: Si la foto está cortada y no se ven las fechas de abajo, toma las siguientes 2 líneas
-            const nombresFallback = textoLimpio.match(/NOMBRES\s+([A-Z Ñ]+(?:\n[A-Z Ñ]+)?)/i);
-            if (nombresFallback) {
-                nombres = nombresFallback[1].replace(/\n/g, " ").trim();
+        if (idxApellidos !== -1 && idxNombres !== -1) {
+            // MAGIA ITX 🪄: Detectar dirección de lectura (Bottom-Up vs Top-Down)
+            // Revisamos la línea que está justo ANTES de "APELLIDOS"
+            const lineaAnterior = textoCrudoArray[idxApellidos - 1] || "";
+            
+            // Si la línea anterior es solo texto (sin números ni palabras del encabezado), Google leyó al revés.
+            const esBottomUp = /^[A-Z Ñ]+$/.test(lineaAnterior) && 
+                               !lineaAnterior.includes("NUMERO") && 
+                               !lineaAnterior.includes("CEDULA") && 
+                               !lineaAnterior.includes("CIUDADANIA");
+
+            if (esBottomUp) {
+                // Leyó: Valor -> Etiqueta
+                apellidos = textoCrudoArray[idxApellidos - 1];
+                nombres = textoCrudoArray[idxNombres - 1];
+            } else {
+                // Leyó: Etiqueta -> Valor (Lectura Normal)
+                apellidos = textoCrudoArray[idxApellidos + 1];
+                nombres = textoCrudoArray[idxNombres + 1];
             }
         }
 
-        // D. Limpieza final preventiva
-        const limpiar = (txt) => txt.replace(/(APELLIDOS|NOMBRES|REPUBLICA|COLOMBIA|CEDULA|FIRMA|CIUDADANIA)/g, "").trim();
+        // C. Limpieza final por si el OCR pegó la firma al nombre
+        const limpiar = (txt) => (txt || "").replace(/(APELLIDOS|NOMBRES|REPUBLICA|COLOMBIA|CEDULA|FIRMA|CIUDADANIA)/g, "").trim();
         nombres = limpiar(nombres);
         apellidos = limpiar(apellidos);
 
@@ -191,6 +202,7 @@ app.get('/health', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🛡️ Servidor OCR blindado en puerto ${PORT}`);
 });
+
 
 
 
