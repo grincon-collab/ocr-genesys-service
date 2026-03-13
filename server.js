@@ -128,58 +128,37 @@ app.post('/api/extract', rateLimit, authenticate, async (req, res) => {
             return res.json({ calidadAprobada: false, mensajeRechazo: "No se detectó texto en el documento. Asegúrese de que haya buena luz." });
         }
 
-// 2. Lógica de Extracción de Datos (ITX Logic v3 - A prueba de OCR rebelde)
-        const textoLimpio = fullText.toUpperCase();
+// 2. Lógica de Extracción (ITX Logic v4 - Método de Anclas)
+        // Limpiamos dejando solo letras, números, la Ñ y los saltos de línea
+        const textoLimpio = fullText.toUpperCase().replace(/[^A-Z0-9 Ñ\n]/gi, "");
         
-        // Separar por saltos de línea, quitar caracteres raros y eliminar líneas vacías
-        const lineas = textoLimpio.split('\n')
-            .map(l => l.trim().replace(/[^A-Z0-9 Ñ]/gi, ""))
-            .filter(l => l.length > 0);
-
         let nombres = "";
         let apellidos = "";
-        
-        // A. Extraer Cédula (Inmune al desorden)
+
+        // A. Extraer Cédula
         const cedulaMatch = textoLimpio.match(/(?:NUMERO|CEDULA|DENTIDAD|NÚMERO|NUIP|Nº)\s*([\d. ]{7,15})/i);
         const cedula = cedulaMatch ? cedulaMatch[1].replace(/\D/g, '') : "";
 
-        // B. Buscar la ubicación exacta de las etiquetas
-        const idxApellidos = lineas.findIndex(l => l.startsWith("APELLIDOS"));
-        const idxNombres = lineas.findIndex(l => l.startsWith("NOMBRES"));
+        // B. Extraer Apellidos: Todo lo que esté estrictamente ENTRE "APELLIDOS" y "NOMBRES"
+        const apellidosMatch = textoLimpio.match(/APELLIDOS\s+([\s\S]+?)\s+NOMBRES/i);
+        if (apellidosMatch) {
+            apellidos = apellidosMatch[1].replace(/\n/g, " ").trim();
+        }
 
-        // C. Extraer Apellidos inteligentemente
-        if (idxApellidos !== -1) {
-            const textoJunto = lineas[idxApellidos].replace("APELLIDOS", "").trim();
-            if (textoJunto.length > 2) {
-                // Si el OCR lo leyó en la misma línea: "APELLIDOS RINCON D"
-                apellidos = textoJunto;
-            } else {
-                // Si lo leyó en la línea de abajo
-                apellidos = lineas[idxApellidos + 1] || "";
+        // C. Extraer Nombres: Todo lo que esté ENTRE "NOMBRES" y la siguiente etiqueta de la cédula
+        // (Suele ser NACIMIENTO, ESTATURA, SEXO, RH, FIRMA, etc.)
+        const nombresMatch = textoLimpio.match(/NOMBRES\s+([\s\S]+?)\s+(?:NACIMIENTO|ESTATURA|GS|SEXO|RH|FECHA|LUGAR|FIRMA|DOCUMENTO|NACIDO)/i);
+        if (nombresMatch) {
+            nombres = nombresMatch[1].replace(/\n/g, " ").trim();
+        } else {
+            // Plan B: Si la foto está cortada y no se ven las fechas de abajo, toma las siguientes 2 líneas
+            const nombresFallback = textoLimpio.match(/NOMBRES\s+([A-Z Ñ]+(?:\n[A-Z Ñ]+)?)/i);
+            if (nombresFallback) {
+                nombres = nombresFallback[1].replace(/\n/g, " ").trim();
             }
         }
 
-        // D. Extraer Nombres inteligentemente
-        if (idxNombres !== -1) {
-            const textoJunto = lineas[idxNombres].replace("NOMBRES", "").trim();
-            if (textoJunto.length > 2) {
-                nombres = textoJunto;
-            } else {
-                nombres = lineas[idxNombres + 1] || "";
-            }
-        }
-
-        // E. ELIMINADOR DE CRUCES (La magia que soluciona tu error actual)
-        // Si el OCR metió el apellido dentro del nombre (Ej: GABRIEL DAVID RINCON D)
-        if (nombres && apellidos && nombres.includes(apellidos) && nombres !== apellidos) {
-            nombres = nombres.replace(apellidos, "").trim();
-        } 
-        // Si el OCR hizo lo contrario
-        else if (apellidos && nombres && apellidos.includes(nombres) && apellidos !== nombres) {
-            apellidos = apellidos.replace(nombres, "").trim();
-        }
-
-        // F. Limpieza final de basura residual
+        // D. Limpieza final preventiva
         const limpiar = (txt) => txt.replace(/(APELLIDOS|NOMBRES|REPUBLICA|COLOMBIA|CEDULA|FIRMA|CIUDADANIA)/g, "").trim();
         nombres = limpiar(nombres);
         apellidos = limpiar(apellidos);
@@ -208,5 +187,6 @@ app.get('/health', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🛡️ Servidor OCR blindado en puerto ${PORT}`);
 });
+
 
 
