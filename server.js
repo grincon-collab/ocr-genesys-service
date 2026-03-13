@@ -128,42 +128,59 @@ app.post('/api/extract', rateLimit, authenticate, async (req, res) => {
             return res.json({ calidadAprobada: false, mensajeRechazo: "No se detectó texto en el documento. Asegúrese de que haya buena luz." });
         }
 
-        // 2. Lógica de Extracción de Datos (ITX Logic)
+// 2. Lógica de Extracción de Datos Mejorada (ITX Logic v2)
         const textoLimpio = fullText.toUpperCase();
-        const lineas = textoLimpio.split('\n').map(l => l.trim());
+        const lineas = textoLimpio.split('\n').map(l => l.trim().replace(/[^A-Z0-9 ]/g, ""));
 
-        // A. Extraer Cédula (Busca números de 7-10 dígitos)
-        const cedulaMatch = textoLimpio.match(/(?:NUMERO|CEDULA|DENTIDAD|NÚMERO|NUIP)\s*[:.]?\s*([\d. ]{7,15})/i);
-        let cedula = cedulaMatch ? cedulaMatch[1].replace(/\D/g, '') : "";
-
-        // B. Extraer Nombres y Apellidos
         let nombres = "";
         let apellidos = "";
+        let cedula = "";
 
-        lineas.forEach((linea, index) => {
-            // Cédula Amarilla Tradicional
-            if (linea.includes("APELLIDOS")) {
-                apellidos = lineas[index + 1] || "";
-            }
-            if (linea.includes("NOMBRES")) {
-                nombres = lineas[index + 1] || "";
-            }
-            // Soporte para Cédula Digital (etiquetas juntas)
-            if (linea.startsWith("APELLIDOS") && linea.length > 10) {
-                apellidos = linea.replace("APELLIDOS", "").trim();
-            }
-            if (linea.startsWith("NOMBRES") && linea.length > 8) {
-                nombres = linea.replace("NOMBRES", "").trim();
-            }
-        });
+        // A. Cédula con Regex mejorado
+        const cedulaMatch = textoLimpio.match(/(?:NUMERO|CEDULA|DENTIDAD|NÚMERO|NUIP|Nº)\s*([\d. ]{7,15})/i);
+        cedula = cedulaMatch ? cedulaMatch[1].replace(/\D/g, '') : "";
 
-        // C. Validación de confianza básica
-        if (nombres === "" && apellidos === "" && cedula === "") {
-            return res.json({ 
-                calidadAprobada: false, 
-                mensajeRechazo: "No se pudieron identificar los campos del documento." 
-            });
+        // B. Búsqueda por palabras clave con limpieza de duplicados
+        for (let i = 0; i < lineas.length; i++) {
+            const linea = lineas[i];
+
+            // Buscar Apellidos
+            if (linea.includes("APELLIDOS") && !apellidos) {
+                // Si la línea contiene más texto después de la palabra "APELLIDOS"
+                if (linea.length > 10) {
+                    apellidos = linea.replace("APELLIDOS", "").trim();
+                } else {
+                    apellidos = lineas[i + 1] || "";
+                }
+            }
+
+            // Buscar Nombres
+            if (linea.includes("NOMBRES") && !nombres) {
+                if (linea.length > 8) {
+                    nombres = linea.replace("NOMBRES", "").trim();
+                } else {
+                    nombres = lineas[i + 1] || "";
+                }
+            }
         }
+
+        // C. CORRECCIÓN DE CRUCE (Si el OCR leyó lo mismo en ambos o los invirtió)
+        if (nombres === apellidos || apellidos.includes(nombres)) {
+            // Intentar buscar una línea alternativa para apellidos
+            // En la cédula amarilla, los apellidos suelen estar arriba de los nombres
+            const idxNombres = lineas.findIndex(l => l.includes("NOMBRES"));
+            if (idxNombres > 0) {
+                apellidos = lineas[idxNombres - 1].includes("APELLIDOS") ? 
+                            lineas[idxNombres - 1].replace("APELLIDOS", "").trim() : 
+                            lineas[idxNombres - 1];
+            }
+        }
+
+        // D. Limpieza final de basura del OCR
+        const limpiarBasura = (txt) => txt.replace(/(APELLIDOS|NOMBRES|REPUBLICA|COLOMBIA|CEDULA|DENTIDAD|APELLID|NOMBR)/g, "").trim();
+        
+        nombres = limpiarBasura(nombres);
+        apellidos = limpiarBasura(apellidos);
 
         // 3. Respuesta Exitosa
         res.json({
@@ -189,3 +206,4 @@ app.get('/health', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🛡️ Servidor OCR blindado en puerto ${PORT}`);
 });
+
