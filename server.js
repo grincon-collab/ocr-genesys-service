@@ -128,59 +128,61 @@ app.post('/api/extract', rateLimit, authenticate, async (req, res) => {
             return res.json({ calidadAprobada: false, mensajeRechazo: "No se detectó texto en el documento. Asegúrese de que haya buena luz." });
         }
 
-// 2. Lógica de Extracción de Datos Mejorada (ITX Logic v2)
+// 2. Lógica de Extracción de Datos (ITX Logic v3 - A prueba de OCR rebelde)
         const textoLimpio = fullText.toUpperCase();
-        const lineas = textoLimpio.split('\n').map(l => l.trim().replace(/[^A-Z0-9 ]/g, ""));
+        
+        // Separar por saltos de línea, quitar caracteres raros y eliminar líneas vacías
+        const lineas = textoLimpio.split('\n')
+            .map(l => l.trim().replace(/[^A-Z0-9 Ñ]/gi, ""))
+            .filter(l => l.length > 0);
 
         let nombres = "";
         let apellidos = "";
-        let cedula = "";
-
-        // A. Cédula con Regex mejorado
-        const cedulaMatch = textoLimpio.match(/(?:NUMERO|CEDULA|DENTIDAD|NÚMERO|NUIP|Nº)\s*([\d. ]{7,15})/i);
-        cedula = cedulaMatch ? cedulaMatch[1].replace(/\D/g, '') : "";
-
-        // B. Búsqueda por palabras clave con limpieza de duplicados
-        for (let i = 0; i < lineas.length; i++) {
-            const linea = lineas[i];
-
-            // Buscar Apellidos
-            if (linea.includes("APELLIDOS") && !apellidos) {
-                // Si la línea contiene más texto después de la palabra "APELLIDOS"
-                if (linea.length > 10) {
-                    apellidos = linea.replace("APELLIDOS", "").trim();
-                } else {
-                    apellidos = lineas[i + 1] || "";
-                }
-            }
-
-            // Buscar Nombres
-            if (linea.includes("NOMBRES") && !nombres) {
-                if (linea.length > 8) {
-                    nombres = linea.replace("NOMBRES", "").trim();
-                } else {
-                    nombres = lineas[i + 1] || "";
-                }
-            }
-        }
-
-        // C. CORRECCIÓN DE CRUCE (Si el OCR leyó lo mismo en ambos o los invirtió)
-        if (nombres === apellidos || apellidos.includes(nombres)) {
-            // Intentar buscar una línea alternativa para apellidos
-            // En la cédula amarilla, los apellidos suelen estar arriba de los nombres
-            const idxNombres = lineas.findIndex(l => l.includes("NOMBRES"));
-            if (idxNombres > 0) {
-                apellidos = lineas[idxNombres - 1].includes("APELLIDOS") ? 
-                            lineas[idxNombres - 1].replace("APELLIDOS", "").trim() : 
-                            lineas[idxNombres - 1];
-            }
-        }
-
-        // D. Limpieza final de basura del OCR
-        const limpiarBasura = (txt) => txt.replace(/(APELLIDOS|NOMBRES|REPUBLICA|COLOMBIA|CEDULA|DENTIDAD|APELLID|NOMBR)/g, "").trim();
         
-        nombres = limpiarBasura(nombres);
-        apellidos = limpiarBasura(apellidos);
+        // A. Extraer Cédula (Inmune al desorden)
+        const cedulaMatch = textoLimpio.match(/(?:NUMERO|CEDULA|DENTIDAD|NÚMERO|NUIP|Nº)\s*([\d. ]{7,15})/i);
+        const cedula = cedulaMatch ? cedulaMatch[1].replace(/\D/g, '') : "";
+
+        // B. Buscar la ubicación exacta de las etiquetas
+        const idxApellidos = lineas.findIndex(l => l.startsWith("APELLIDOS"));
+        const idxNombres = lineas.findIndex(l => l.startsWith("NOMBRES"));
+
+        // C. Extraer Apellidos inteligentemente
+        if (idxApellidos !== -1) {
+            const textoJunto = lineas[idxApellidos].replace("APELLIDOS", "").trim();
+            if (textoJunto.length > 2) {
+                // Si el OCR lo leyó en la misma línea: "APELLIDOS RINCON D"
+                apellidos = textoJunto;
+            } else {
+                // Si lo leyó en la línea de abajo
+                apellidos = lineas[idxApellidos + 1] || "";
+            }
+        }
+
+        // D. Extraer Nombres inteligentemente
+        if (idxNombres !== -1) {
+            const textoJunto = lineas[idxNombres].replace("NOMBRES", "").trim();
+            if (textoJunto.length > 2) {
+                nombres = textoJunto;
+            } else {
+                nombres = lineas[idxNombres + 1] || "";
+            }
+        }
+
+        // E. ELIMINADOR DE CRUCES (La magia que soluciona tu error actual)
+        // Si el OCR metió el apellido dentro del nombre (Ej: GABRIEL DAVID RINCON D)
+        if (nombres && apellidos && nombres.includes(apellidos) && nombres !== apellidos) {
+            nombres = nombres.replace(apellidos, "").trim();
+        } 
+        // Si el OCR hizo lo contrario
+        else if (apellidos && nombres && apellidos.includes(nombres) && apellidos !== nombres) {
+            apellidos = apellidos.replace(nombres, "").trim();
+        }
+
+        // F. Limpieza final de basura residual
+        const limpiar = (txt) => txt.replace(/(APELLIDOS|NOMBRES|REPUBLICA|COLOMBIA|CEDULA|FIRMA|CIUDADANIA)/g, "").trim();
+        nombres = limpiar(nombres);
+        apellidos = limpiar(apellidos);
 
         // 3. Respuesta Exitosa
         res.json({
@@ -206,4 +208,5 @@ app.get('/health', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🛡️ Servidor OCR blindado en puerto ${PORT}`);
 });
+
 
