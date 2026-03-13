@@ -164,13 +164,17 @@ app.post('/api/extract', rateLimit, authenticate, async (req, res) => {
         apellidos = limpiar(apellidos);
 
         // 3. Respuesta Exitosa
+// 3. Respuesta Final con Debugging Activado
         res.json({
             calidadAprobada: true,
             cedula: cedula || "No detectada",
             nombres: nombres || "No detectado",
             apellidos: apellidos || "No detectado",
             infoAdicional: {
-                tipoDocumento: textoLimpio.includes("COLOMBIA") ? "Cédula Colombiana" : "Desconocido"
+                tipoDocumento: textoLimpio.includes("COLOMBIA") ? "Cédula Colombiana" : "Desconocido",
+                nombreCompleto: `${nombres} ${apellidos}`.trim(),
+                // 🕵️‍♂️ EL DETECTIVE: Esto nos mostrará EXACTAMENTE qué leyó Google y en qué orden
+                textoCrudo: fullText.toUpperCase().replace(/\n/g, " | ") 
             }
         });
 
@@ -187,6 +191,7 @@ app.get('/health', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🛡️ Servidor OCR blindado en puerto ${PORT}`);
 });
+
 
 
 
